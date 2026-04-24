@@ -1,0 +1,18 @@
+[
+  {
+    "username": "admin",
+    "role": "admin",
+    "enabled": true,
+    "salt": "cc5f752f219c1c62d0eeeddd7180c0f4",
+    "passwordHash": "0007267dd3ce2620e0521e49298406f634c5c338551929d4a017b2f985338b64",
+    "createdAt": "2026-04-23T21:31:56.828Z"
+  },
+  {
+    "username": "user",
+    "role": "user",
+    "enabled": true,
+    "salt": "322f1b41d61e96796955c52a1de6f5ec",
+    "passwordHash": "22c971f7926780b8bc1a7f4ed6fc4798e5f3c782d1ab97074431bddea3df2db0",
+    "createdAt": "2026-04-23T21:57:35.541Z"
+  }
+]
