@@ -1,98 +1,124 @@
-const fastify = require('fastify')({ logger: true });
+/**
+ * GenAI Service Portal - Backend (Express)
+ * - Auth via express-session
+ * - Users stored in backend/data/users.json (supports salt+passwordHash)
+ * - Projects stored in backend/data/projects.json
+ * - Project docs served from: docs/<projectId>/*
+ */
+
+const express = require('express');
+const session = require('express-session');
+const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 
-// ===== Plugins =====
-fastify.register(require('@fastify/cookie'));
-fastify.register(require('@fastify/formbody'));
-fastify.register(require('@fastify/cors'), {
+const app = express();
+const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
+
+// ========= Paths =========
+const BASE_DIR = process.cwd();
+const BACKEND_DIR = path.join(BASE_DIR, 'backend');
+const DATA_DIR = path.join(BACKEND_DIR, 'data');
+
+const USERS_FILE = path.join(DATA_DIR, 'users.json');
+const PROJECTS_FILE = path.join(DATA_DIR, 'projects.json');
+
+// docs/<projectId>/
+const DOCS_ROOT = path.join(BASE_DIR, 'docs');
+
+// ========= Middleware =========
+app.use(express.json({ limit: '1mb' }));
+
+app.use(cors({
   origin: 'http://localhost:3001',
   credentials: true
-});
+}));
 
-// ===== Paths =====
-const DATA_DIR = path.join(__dirname, 'data');
-const USERS_FILE = path.join(DATA_DIR, 'users.json');
-const DOCS_DIR = path.join(__dirname, '..', 'docs');
+app.use(session({
+  secret: process.env.SESSION_SECRET || 'genai-portal-dev-secret',
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    httpOnly: true,
+    sameSite: 'lax'
+    // secure: true // abilitalo in HTTPS
+  }
+}));
 
-// ===== Password hashing (POC-grade but decent) =====
-function makeSalt() {
-  return crypto.randomBytes(16).toString('hex');
+// ========= Helpers: JSON storage =========
+function ensureDir(p) {
+  if (!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true });
 }
-function hashPassword(password, salt) {
-  // pbkdf2: ok per MVP; in prod useresti argon2/bcrypt
-  const dk = crypto.pbkdf2Sync(password, salt, 120000, 32, 'sha256');
-  return dk.toString('hex');
-}
 
-// ===== Users storage =====
-function ensureUsersFile() {
-  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-
-  if (!fs.existsSync(USERS_FILE)) {
-    const salt = makeSalt();
-    const passwordHash = hashPassword('password123', salt);
-    const initial = [
-      {
-        username: 'admin',
-        role: 'admin',
-        enabled: true,
-        salt,
-        passwordHash,
-        createdAt: new Date().toISOString()
-      }
-    ];
-    fs.writeFileSync(USERS_FILE, JSON.stringify(initial, null, 2), 'utf-8');
+function loadJson(file, fallback) {
+  try {
+    if (!fs.existsSync(file)) return fallback;
+    return JSON.parse(fs.readFileSync(file, 'utf-8'));
+  } catch (e) {
+    return fallback;
   }
 }
 
-function loadUsers() {
-  ensureUsersFile();
-  return JSON.parse(fs.readFileSync(USERS_FILE, 'utf-8'));
+function saveJson(file, data) {
+  fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf-8');
 }
 
-function saveUsers(users) {
-  fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2), 'utf-8');
+// ========= Helpers: Auth =========
+function requireAuth(req, res, next) {
+  if (!req.session || !req.session.user) return res.status(401).json({ error: 'Unauthorized' });
+  next();
 }
 
-function findUser(username) {
-  const users = loadUsers();
-  return users.find(u => u.username === username);
+function requireAdmin(req, res, next) {
+  if (!req.session || !req.session.user) return res.status(401).json({ error: 'Unauthorized' });
+  if (req.session.user.role !== 'admin') return res.status(403).json({ error: 'Forbidden (admin only)' });
+  next();
 }
 
-// Backward compatibility: if user has "password" plaintext (older POC), accept it
+// ========= Helpers: Password hashing =========
+// support both most common legacy schemes to match your existing users.json:
+// - sha256(password + salt)
+// - sha256(salt + password)
+function sha256Hex(s) {
+  return crypto.createHash('sha256').update(s).digest('hex');
+}
+
+function makeSaltHex() {
+  return crypto.randomBytes(16).toString('hex'); // 32 hex chars
+}
+
+function computeHashes(password, salt) {
+  return [
+    sha256Hex(password + salt),
+    sha256Hex(salt + password)
+  ];
+}
+
 function verifyPassword(user, password) {
-  if (user.passwordHash && user.salt) {
-    return hashPassword(password, user.salt) === user.passwordHash;
-  }
-  if (user.password) {
+  // Legacy plaintext support (if ever present)
+  if (typeof user.password === 'string') {
     return user.password === password;
   }
+
+  // Hash+salt support (your current file)
+  if (user.salt && user.passwordHash) {
+    const candidates = computeHashes(password, user.salt);
+    return candidates.includes(user.passwordHash);
+  }
+
   return false;
 }
 
-// ===== Auth helpers =====
-function requireAuth(req, reply) {
-  const u = req.cookies.sessionUser;
-  const r = req.cookies.sessionRole;
-  if (!u || !r) {
-    reply.code(401).send({ error: 'Not authenticated' });
-    return false;
-  }
-  return true;
+// When we set a password (create/reset), we will store:
+function buildHashedPasswordRecord(password) {
+  const salt = makeSaltHex();
+  // Choose a single canonical scheme going forward:
+  const passwordHash = sha256Hex(password + salt);
+  return { salt, passwordHash, hashScheme: 'sha256(password+salt)' };
 }
 
-function requireAdmin(req, reply) {
-  if (!requireAuth(req, reply)) return false;
-  if (req.cookies.sessionRole !== 'admin') {
-    reply.code(403).send({ error: 'Admin only' });
-    return false;
-  }
-  return true;
-}
-
-// ===== MIME helpers for docs =====
+// ========= Helpers: MIME =========
 function getMimeType(filename) {
   const ext = path.extname(filename).toLowerCase();
   switch (ext) {
@@ -119,260 +145,240 @@ function shouldInline(filename) {
   return ['.pdf', '.png', '.jpg', '.jpeg', '.gif', '.txt', '.json'].includes(ext);
 }
 
-// =========================
-// Routes
-// =========================
+// ========= Bootstrap data files =========
+ensureDir(DATA_DIR);
 
-fastify.get('/healthz', async () => ({ status: 'ok' }));
+// projects.json bootstrap (non tocca users.json!)
+if (!fs.existsSync(PROJECTS_FILE)) {
+  saveJson(PROJECTS_FILE, {
+    projects: [
+      {
+        id: 'bookstack-mcp-consip',
+        name: 'Bookstack MCP - Consip',
+        description: 'Documentazione e demo del progetto',
+        enabled: true
+      }
+    ]
+  });
+}
 
-// Who am I
-fastify.get('/me', async (req, reply) => {
-  if (!requireAuth(req, reply)) return;
-  return {
-    username: req.cookies.sessionUser,
-    role: req.cookies.sessionRole
+// OPTIONAL: break-glass bootstrap admin password
+// If you are locked out, set env var once and restart backend:
+//   Windows PowerShell:  $env:GENAI_BOOTSTRAP_ADMIN_PASSWORD="NuovaPass"; node index.js
+// It will update (or create) admin in users.json with that password.
+function bootstrapAdminIfEnvSet() {
+  const pw = process.env.GENAI_BOOTSTRAP_ADMIN_PASSWORD;
+  if (!pw) return;
+
+  const users = loadJson(USERS_FILE, []);
+  const idx = users.findIndex(u => u.username === 'admin');
+
+  const rec = buildHashedPasswordRecord(pw);
+  const adminUser = {
+    username: 'admin',
+    role: 'admin',
+    enabled: true,
+    ...rec,
+    createdAt: new Date().toISOString()
   };
+
+  if (idx >= 0) {
+    users[idx] = { ...users[idx], ...adminUser };
+  } else {
+    users.push(adminUser);
+  }
+
+  saveJson(USERS_FILE, users);
+  console.log('✅ Bootstrap admin password applied from GENAI_BOOTSTRAP_ADMIN_PASSWORD');
+}
+
+bootstrapAdminIfEnvSet();
+
+// ========= Routes =========
+
+// Health
+app.get('/healthz', (req, res) => res.json({ status: 'ok' }));
+
+// Me
+app.get('/me', (req, res) => {
+  if (!req.session || !req.session.user) return res.status(401).json({ error: 'Unauthorized' });
+  res.json(req.session.user);
 });
 
-// Login (sets session cookies)
-fastify.post('/login', async (req, reply) => {
+// Login
+app.post('/login', (req, res) => {
   const { username, password } = req.body || {};
-  if (!username || !password) {
-    reply.code(400).send({ error: 'Missing username/password' });
-    return;
-  }
+  if (!username || !password) return res.status(400).json({ error: 'Missing username/password' });
 
-  const user = findUser(username);
-  if (!user || !user.enabled) {
-    reply.code(401).send({ error: 'Invalid credentials' });
-    return;
-  }
+  const users = loadJson(USERS_FILE, []);
+  const user = users.find(u => u.username === username && u.enabled !== false);
 
-  if (!verifyPassword(user, password)) {
-    reply.code(401).send({ error: 'Invalid credentials' });
-    return;
-  }
+  if (!user) return res.status(401).json({ error: 'Invalid credentials' });
+  if (!verifyPassword(user, password)) return res.status(401).json({ error: 'Invalid credentials' });
 
-  reply
-    .setCookie('sessionUser', user.username, { httpOnly: true, sameSite: 'lax', path: '/' })
-    .setCookie('sessionRole', user.role, { httpOnly: true, sameSite: 'lax', path: '/' });
-
-  return { ok: true, username: user.username, role: user.role };
+  req.session.user = { username: user.username, role: user.role };
+  res.json(req.session.user);
 });
 
-// Logout (clear cookies)
-fastify.post('/logout', async (req, reply) => {
-  reply
-    .clearCookie('sessionUser', { path: '/' })
-    .clearCookie('sessionRole', { path: '/' });
-  return { ok: true };
+// Logout
+app.post('/logout', (req, res) => {
+  if (!req.session) return res.json({ ok: true });
+  req.session.destroy(() => res.json({ ok: true }));
 });
 
-// HOME tiles
-fastify.get('/tiles', async (req, reply) => {
-  if (!requireAuth(req, reply)) return;
-
-  return [
-    { title: 'Documenti', type: 'docs' },
-    { title: 'POC', type: 'pocs' },
-    { title: 'Demo Solution', type: 'demos' }
-  ];
+// ========= Projects API (fix /api/projects) =========
+app.get('/api/projects', requireAuth, (req, res) => {
+  const cfg = loadJson(PROJECTS_FILE, { projects: [] });
+  const projects = (cfg.projects || []).filter(p => p.enabled !== false);
+  res.json({ projects });
 });
 
-// ===== Documents dynamic listing =====
-fastify.get('/api/docs', async (req, reply) => {
-  if (!requireAuth(req, reply)) return;
-
-  try {
-    if (!fs.existsSync(DOCS_DIR)) return [];
-
-    const entries = fs.readdirSync(DOCS_DIR, { withFileTypes: true });
-    const files = entries
-      .filter(e => e.isFile())
-      .map(e => e.name)
-      .filter(name => !name.startsWith('.'));
-
-    const docs = files.map(name => {
-      const full = path.join(DOCS_DIR, name);
-      const stat = fs.statSync(full);
-      return {
-        name,
-        ext: path.extname(name).replace('.', '').toLowerCase(),
-        size: stat.size,
-        mtime: stat.mtimeMs,
-        url: `/docs/${encodeURIComponent(name)}`
-      };
-    });
-
-    docs.sort((a, b) => b.mtime - a.mtime);
-    return docs;
-  } catch (err) {
-    req.log.error(err);
-    reply.code(500).send({ error: 'Unable to read docs directory' });
-  }
+app.get('/api/projects/:projectId', requireAuth, (req, res) => {
+  const projectId = String(req.params.projectId);
+  const cfg = loadJson(PROJECTS_FILE, { projects: [] });
+  const project = (cfg.projects || []).find(p => p.id === projectId && p.enabled !== false);
+  if (!project) return res.status(404).json({ error: 'Project not found' });
+  res.json(project);
 });
 
-// Serve docs files (auth protected)
-fastify.get('/docs/:file', async (req, reply) => {
-  if (!requireAuth(req, reply)) return;
+// ========= Project Docs API (project-scoped) =========
+app.get('/api/projects/:projectId/docs', requireAuth, (req, res) => {
+  const projectId = String(req.params.projectId);
+  const projectDir = path.join(DOCS_ROOT, projectId);
 
-  const requested = String(req.params.file || '');
-  const safeName = path.basename(requested); // blocks ../
-  const filePath = path.join(DOCS_DIR, safeName);
-
-  if (!fs.existsSync(filePath)) {
-    reply.code(404).send({ error: 'File not found' });
-    return;
+  if (!fs.existsSync(projectDir)) {
+    return res.json({ projectId, documents: [] });
   }
 
-  const mime = getMimeType(safeName);
-  reply.header('Content-Type', mime);
+  const files = fs.readdirSync(projectDir, { withFileTypes: true })
+    .filter(e => e.isFile())
+    .map(e => e.name)
+    .filter(n => !n.startsWith('.'));
 
-  const disposition = shouldInline(safeName) ? 'inline' : 'attachment';
-  reply.header('Content-Disposition', `${disposition}; filename="${safeName}"`);
-
-  return reply.send(fs.createReadStream(filePath));
-});
-
-// =========================
-// ADMIN: Users Management API
-// =========================
-
-// list users (admin-only) - do NOT return hash/salt
-fastify.get('/users', async (req, reply) => {
-  if (!requireAdmin(req, reply)) return;
-
-  const users = loadUsers().map(u => ({
-    username: u.username,
-    role: u.role,
-    enabled: !!u.enabled,
-    createdAt: u.createdAt || null
+  const documents = files.map(name => ({
+    name,
+    ext: path.extname(name).replace('.', '').toLowerCase(),
+    url: `/api/projects/${encodeURIComponent(projectId)}/docs/${encodeURIComponent(name)}`
   }));
 
-  return users;
+  res.json({ projectId, documents });
 });
 
-// create user (admin-only)
-fastify.post('/users', async (req, reply) => {
-  if (!requireAdmin(req, reply)) return;
+app.get('/api/projects/:projectId/docs/:file', requireAuth, (req, res) => {
+  const projectId = String(req.params.projectId);
+  const safeFile = path.basename(String(req.params.file || ''));
+  const filePath = path.join(DOCS_ROOT, projectId, safeFile);
 
+  if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File not found' });
+
+  res.setHeader('Content-Type', getMimeType(safeFile));
+  res.setHeader('Content-Disposition', `${shouldInline(safeFile) ? 'inline' : 'attachment'}; filename="${safeFile}"`);
+  fs.createReadStream(filePath).pipe(res);
+});
+
+// Placeholder demos API
+app.get('/api/projects/:projectId/demos', requireAuth, (req, res) => {
+  const projectId = String(req.params.projectId);
+  res.json({ projectId, demos: [] });
+});
+
+// ========= Users API (admin) =========
+app.get('/users', requireAdmin, (req, res) => {
+  const users = loadJson(USERS_FILE, []);
+  // never return hashes
+  res.json(users.map(u => ({
+    username: u.username,
+    role: u.role,
+    enabled: u.enabled !== false,
+    createdAt: u.createdAt || null
+  })));
+});
+
+app.post('/users', requireAdmin, (req, res) => {
   const { username, password, role } = req.body || {};
-  if (!username || !password || !role) {
-    reply.code(400).send({ error: 'Missing username/password/role' });
-    return;
-  }
-  if (!['admin', 'user'].includes(role)) {
-    reply.code(400).send({ error: 'Invalid role' });
-    return;
-  }
+  if (!username || !password || !role) return res.status(400).json({ error: 'Missing username/password/role' });
+  if (!['admin', 'user'].includes(role)) return res.status(400).json({ error: 'Invalid role' });
 
-  const users = loadUsers();
-  if (users.find(u => u.username === username)) {
-    reply.code(409).send({ error: 'User already exists' });
-    return;
-  }
+  const users = loadJson(USERS_FILE, []);
+  if (users.find(u => u.username === username)) return res.status(409).json({ error: 'User already exists' });
 
-  const salt = makeSalt();
-  const passwordHash = hashPassword(password, salt);
+  const rec = buildHashedPasswordRecord(password);
 
   users.push({
     username,
     role,
     enabled: true,
-    salt,
-    passwordHash,
+    ...rec,
     createdAt: new Date().toISOString()
   });
 
-  saveUsers(users);
-  return { ok: true };
+  saveJson(USERS_FILE, users);
+  res.json({ ok: true });
 });
 
-// update user (admin-only): role/enabled
-fastify.put('/users/:username', async (req, reply) => {
-  if (!requireAdmin(req, reply)) return;
-
-  const target = req.params.username;
+app.put('/users/:username', requireAdmin, (req, res) => {
+  const username = String(req.params.username);
   const { role, enabled } = req.body || {};
 
-  const users = loadUsers();
-  const user = users.find(u => u.username === target);
-  if (!user) {
-    reply.code(404).send({ error: 'User not found' });
-    return;
-  }
+  const users = loadJson(USERS_FILE, []);
+  const user = users.find(u => u.username === username);
+  if (!user) return res.status(404).json({ error: 'User not found' });
 
   if (role !== undefined) {
-    if (!['admin', 'user'].includes(role)) {
-      reply.code(400).send({ error: 'Invalid role' });
-      return;
-    }
+    if (!['admin', 'user'].includes(role)) return res.status(400).json({ error: 'Invalid role' });
     user.role = role;
   }
-  if (enabled !== undefined) {
-    user.enabled = !!enabled;
-  }
+  if (enabled !== undefined) user.enabled = !!enabled;
 
-  saveUsers(users);
-  return { ok: true };
+  saveJson(USERS_FILE, users);
+  res.json({ ok: true });
 });
 
-// reset password (admin-only)
-fastify.post('/users/:username/reset-password', async (req, reply) => {
-  if (!requireAdmin(req, reply)) return;
-
-  const target = req.params.username;
+app.post('/users/:username/reset-password', requireAdmin, (req, res) => {
+  const username = String(req.params.username);
   const { password } = req.body || {};
-  if (!password) {
-    reply.code(400).send({ error: 'Missing password' });
-    return;
-  }
+  if (!password) return res.status(400).json({ error: 'Missing password' });
 
-  const users = loadUsers();
-  const user = users.find(u => u.username === target);
-  if (!user) {
-    reply.code(404).send({ error: 'User not found' });
-    return;
-  }
+  const users = loadJson(USERS_FILE, []);
+  const user = users.find(u => u.username === username);
+  if (!user) return res.status(404).json({ error: 'User not found' });
 
-  const salt = makeSalt();
-  user.salt = salt;
-  user.passwordHash = hashPassword(password, salt);
-  delete user.password; // remove old plaintext if present
+  const rec = buildHashedPasswordRecord(password);
+  user.salt = rec.salt;
+  user.passwordHash = rec.passwordHash;
+  user.hashScheme = rec.hashScheme;
+  delete user.password; // remove any legacy plaintext
 
-  saveUsers(users);
-  return { ok: true };
+  saveJson(USERS_FILE, users);
+  res.json({ ok: true });
 });
 
-// delete user (admin-only)
-fastify.delete('/users/:username', async (req, reply) => {
-  if (!requireAdmin(req, reply)) return;
+app.delete('/users/:username', requireAdmin, (req, res) => {
+  const target = String(req.params.username);
+  const current = req.session.user?.username;
 
-  const target = req.params.username;
-
-  // safety: prevent deleting self
-  if (target === req.cookies.sessionUser) {
-    reply.code(400).send({ error: 'Cannot delete current logged user' });
-    return;
+  if (target === current) {
+    return res.status(400).json({ error: 'Cannot delete current logged user' });
   }
 
-  const users = loadUsers();
+  const users = loadJson(USERS_FILE, []);
   const next = users.filter(u => u.username !== target);
 
-  if (next.length === users.length) {
-    reply.code(404).send({ error: 'User not found' });
-    return;
-  }
+  if (next.length === users.length) return res.status(404).json({ error: 'User not found' });
 
-  saveUsers(next);
-  return { ok: true };
+  saveJson(USERS_FILE, next);
+  res.json({ ok: true });
 });
 
-// ===== Start server (configurable port) =====
-const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
-fastify.listen({ port: PORT, host: '0.0.0.0' })
-  .then(() => fastify.log.info(`✅ Backend listening on http://localhost:${PORT}`))
-  .catch(err => {
-    fastify.log.error(err);
-    process.exit(1);
-  });
+// ========= 404 =========
+app.use((req, res) => {
+  res.status(404).json({ error: 'Not Found', path: req.path });
+});
+
+// ========= Start =========
+app.listen(PORT, () => {
+  console.log(`✅ Backend running on http://localhost:${PORT}`);
+  console.log(`   - /api/projects ready`);
+  console.log(`   - users.json path: ${USERS_FILE}`);
+  console.log(`   - projects.json path: ${PROJECTS_FILE}`);
+});
