@@ -1,0 +1,10 @@
+{
+  "projects": [
+    {
+      "id": "bookstack-mcp-consip",
+      "name": "Bookstack MCP - Consip",
+      "description": "Documentazione e demo del progetto",
+      "enabled": true
+    }
+  ]
+}

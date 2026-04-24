@@ -3,9 +3,10 @@
     "username": "admin",
     "role": "admin",
     "enabled": true,
-    "salt": "cc5f752f219c1c62d0eeeddd7180c0f4",
-    "passwordHash": "0007267dd3ce2620e0521e49298406f634c5c338551929d4a017b2f985338b64",
-    "createdAt": "2026-04-23T21:31:56.828Z"
+    "salt": "3088b4e3bb47010da433b573513ae1cf",
+    "passwordHash": "a5cd48deba2f474272b02d603f23845715e8356d40788a8b4d3c7a0774aac8e7",
+    "createdAt": "2026-04-24T17:33:08.099Z",
+    "hashScheme": "sha256(password+salt)"
   },
   {
     "username": "user",

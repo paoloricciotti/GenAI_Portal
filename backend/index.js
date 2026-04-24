@@ -16,16 +16,20 @@ const crypto = require('crypto');
 const app = express();
 const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
 
+
 // ========= Paths =========
-const BASE_DIR = process.cwd();
-const BACKEND_DIR = path.join(BASE_DIR, 'backend');
+// directory reale del backend (non dipende da dove lanci node)
+const BACKEND_DIR = __dirname;
+
+// backend/data
 const DATA_DIR = path.join(BACKEND_DIR, 'data');
 
 const USERS_FILE = path.join(DATA_DIR, 'users.json');
 const PROJECTS_FILE = path.join(DATA_DIR, 'projects.json');
 
-// docs/<projectId>/
-const DOCS_ROOT = path.join(BASE_DIR, 'docs');
+// docs/<projectId>/ (alla root del progetto)
+const DOCS_ROOT = path.join(BACKEND_DIR, '..', 'docs');
+
 
 // ========= Middleware =========
 app.use(express.json({ limit: '1mb' }));
