@@ -12,7 +12,7 @@ app.use(cors({
   origin: [
     'http://localhost:3000',
     'https://genai-portal.onrender.com',
-    'https://dashboard.render.com/static/srv-d7nq9ef7f7vs73fvb7gg/deploys/dep-d7nqgn6kpvgs739l1jdg?r=2026-04-27%4018%3A17%3A07%7E2026-04-27%4018%3A20%3A17'
+    'https://genai-portal-1.onrender.com'
   ],
   credentials: true
 }));
