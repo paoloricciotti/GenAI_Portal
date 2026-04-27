@@ -23,3 +23,15 @@
     "multer": "^2.1.1"
   }
 }
+
+{
+  "name": "genai-portal-backend",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "express": "^5.1.0"
+  }
+}
