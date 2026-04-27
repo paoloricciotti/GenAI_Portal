@@ -15,14 +15,5 @@
     "salt": "322f1b41d61e96796955c52a1de6f5ec",
     "passwordHash": "22c971f7926780b8bc1a7f4ed6fc4798e5f3c782d1ab97074431bddea3df2db0",
     "createdAt": "2026-04-23T21:57:35.541Z"
-  },
-  {
-    "username": "user02",
-    "role": "user",
-    "enabled": true,
-    "salt": "2886d5cf330bb58cce6042908c1022f5",
-    "passwordHash": "831a8fad2b6057ae2589e67f9038823dee00331658acbc9e8c585d5b593d1419",
-    "hashScheme": "sha256(password+salt)",
-    "createdAt": "2026-04-27T07:21:01.333Z"
   }
 ]

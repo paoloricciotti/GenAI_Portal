@@ -5,6 +5,13 @@
       "name": "Bookstack MCP - Consip",
       "description": "Documentazione e demo del progetto",
       "enabled": true
+    },
+    {
+      "id": "progetto-di-prova",
+      "name": "progetto di prova",
+      "description": "questo è un progetto di prova",
+      "enabled": true,
+      "createdAt": "2026-04-27T15:27:48.834Z"
     }
   ]
 }
