@@ -1,38 +1,108 @@
-.App {
-  text-align: center;
+import React from 'react';
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+
+// Provider per l'autenticazione
+import { AuthProvider, useAuth } from './context/AuthContext';
+
+// Import delle Pagine
+import LoginPage from './pages/LoginPage';
+import ProjectsHome from './pages/ProjectsHome';
+import ProjectDashboard from './pages/ProjectDashboard';
+import AdminUsers from './pages/AdminUsers';
+
+// Import del componente Layout (quello che contiene la Navbar)
+import Layout from './components/Layout';
+
+/**
+ * Protegge le rotte private.
+ * Reindirizza al login se l'utente non è autenticato.
+ */
+const PrivateRoute = ({ children }) => {
+  const { user, loading } = useAuth();
+  if (loading) return <div style={styles.loading}>Verifica sessione in corso...</div>;
+  return user ? children : <Navigate to="/login" />;
+};
+
+/**
+ * Protegge le rotte amministrative.
+ * Reindirizza alla home progetti se l'utente non è admin.
+ */
+const AdminRoute = ({ children }) => {
+  const { user, isAdmin, loading } = useAuth();
+  if (loading) return null;
+  return user && isAdmin ? children : <Navigate to="/projects" />;
+};
+
+function App() {
+  return (
+    <AuthProvider>
+      <BrowserRouter>
+        <div style={styles.appContainer}>
+          <Routes>
+            {/* PAGINA LOGIN: Senza Navbar */}
+            <Route path="/login" element={<LoginPage />} />
+
+            {/* ROTTE PROTETTE: Tutte avvolte nel componente Layout per mostrare la Navbar */}
+            <Route
+              path="/projects"
+              element={
+                <PrivateRoute>
+                  <Layout>
+                    <ProjectsHome />
+                  </Layout>
+                </PrivateRoute>
+              }
+            />
+
+            <Route
+              path="/projects/:id"
+              element={
+                <PrivateRoute>
+                  <Layout>
+                    <ProjectDashboard />
+                  </Layout>
+                </PrivateRoute>
+              }
+            />
+
+            <Route
+              path="/admin/users"
+              element={
+                <PrivateRoute>
+                  <AdminRoute>
+                    <Layout>
+                      <AdminUsers />
+                    </Layout>
+                  </AdminRoute>
+                </PrivateRoute>
+              }
+            />
+
+            {/* Gestione percorsi inesistenti */}
+            <Route path="/" element={<Navigate to="/projects" />} />
+            <Route path="*" element={<Navigate to="/projects" />} />
+          </Routes>
+        </div>
+      </BrowserRouter>
+    </AuthProvider>
+  );
 }
 
-.App-logo {
-  height: 40vmin;
-  pointer-events: none;
-}
-
-@media (prefers-reduced-motion: no-preference) {
-  .App-logo {
-    animation: App-logo-spin infinite 20s linear;
+const styles = {
+  appContainer: {
+    minHeight: '100vh',
+    backgroundColor: '#0f0f17',
+    color: '#fff',
+    fontFamily: 'system-ui, -apple-system, sans-serif',
+  },
+  loading: {
+    display: 'flex',
+    justifyContent: 'center',
+    alignItems: 'center',
+    height: '100vh',
+    fontSize: '1.2rem',
+    color: '#b3b3c7',
   }
-}
+};
 
-.App-header {
-  background-color: #282c34;
-  min-height: 100vh;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  font-size: calc(10px + 2vmin);
-  color: white;
-}
-
-.App-link {
-  color: #61dafb;
-}
-
-@keyframes App-logo-spin {
-  from {
-    transform: rotate(0deg);
-  }
-  to {
-    transform: rotate(360deg);
-  }
-}
+export default App;

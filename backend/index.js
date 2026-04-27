@@ -1,388 +1,373 @@
-/**
- * GenAI Service Portal - Backend (Express)
- * - Auth via express-session
- * - Users stored in backend/data/users.json (supports salt+passwordHash)
- * - Projects stored in backend/data/projects.json
- * - Project docs served from: docs/<projectId>/*
- */
-
 const express = require('express');
-const session = require('express-session');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const multer = require('multer');
 
 const app = express();
-const PORT = process.env.PORT ? Number(process.env.PORT) : 3000;
-
-
-// ========= Paths =========
-// directory reale del backend (non dipende da dove lanci node)
-const BACKEND_DIR = __dirname;
-
-// backend/data
-const DATA_DIR = path.join(BACKEND_DIR, 'data');
-
-const USERS_FILE = path.join(DATA_DIR, 'users.json');
-const PROJECTS_FILE = path.join(DATA_DIR, 'projects.json');
-
-// docs/<projectId>/ (alla root del progetto)
-const DOCS_ROOT = path.join(BACKEND_DIR, '..', 'docs');
-
-
-// ========= Middleware =========
-app.use(express.json({ limit: '1mb' }));
+const PORT = process.env.PORT || 3001;
 
 app.use(cors({
-  origin: 'http://localhost:3001',
+  origin: 'http://localhost:3000',
   credentials: true
 }));
 
-app.use(session({
-  secret: process.env.SESSION_SECRET || 'genai-portal-dev-secret',
-  resave: false,
-  saveUninitialized: false,
-  cookie: {
-    httpOnly: true,
-    sameSite: 'lax'
-    // secure: true // abilitalo in HTTPS
+app.use(express.json());
+
+const DATA_DIR = path.join(__dirname, 'data');
+const USERS_FILE = path.join(DATA_DIR, 'users.json');
+const PROJECTS_FILE = path.join(DATA_DIR, 'projects.json');
+const DOCS_DIR = path.join(DATA_DIR, 'docs');
+
+fs.mkdirSync(DATA_DIR, { recursive: true });
+fs.mkdirSync(DOCS_DIR, { recursive: true });
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const projectDir = getProjectDocsDir(req.params.id);
+    fs.mkdirSync(projectDir, { recursive: true });
+    cb(null, projectDir);
+  },
+  filename: (req, file, cb) => {
+    const safeName = path.basename(file.originalname).replace(/[^\w.\- ()]/g, '_');
+    cb(null, `${Date.now()}-${safeName}`);
   }
-}));
+});
 
-// ========= Helpers: JSON storage =========
-function ensureDir(p) {
-  if (!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true });
-}
+const upload = multer({ storage });
 
-function loadJson(file, fallback) {
+const readJSON = (file) => {
   try {
-    if (!fs.existsSync(file)) return fallback;
-    return JSON.parse(fs.readFileSync(file, 'utf-8'));
+    if (!fs.existsSync(file)) return [];
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
   } catch (e) {
-    return fallback;
+    console.error(`Errore lettura file ${file}:`, e);
+    return [];
   }
-}
+};
 
-function saveJson(file, data) {
-  fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf-8');
-}
+const writeJSON = (file, data) => {
+  fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf8');
+};
 
-// ========= Helpers: Auth =========
-function requireAuth(req, res, next) {
-  if (!req.session || !req.session.user) return res.status(401).json({ error: 'Unauthorized' });
-  next();
-}
+const getUsersArray = () => {
+  const data = readJSON(USERS_FILE);
 
-function requireAdmin(req, res, next) {
-  if (!req.session || !req.session.user) return res.status(401).json({ error: 'Unauthorized' });
-  if (req.session.user.role !== 'admin') return res.status(403).json({ error: 'Forbidden (admin only)' });
-  next();
-}
-
-// ========= Helpers: Password hashing =========
-// support both most common legacy schemes to match your existing users.json:
-// - sha256(password + salt)
-// - sha256(salt + password)
-function sha256Hex(s) {
-  return crypto.createHash('sha256').update(s).digest('hex');
-}
-
-function makeSaltHex() {
-  return crypto.randomBytes(16).toString('hex'); // 32 hex chars
-}
-
-function computeHashes(password, salt) {
-  return [
-    sha256Hex(password + salt),
-    sha256Hex(salt + password)
-  ];
-}
-
-function verifyPassword(user, password) {
-  // Legacy plaintext support (if ever present)
-  if (typeof user.password === 'string') {
-    return user.password === password;
+  if (Array.isArray(data)) {
+    return data;
   }
 
-  // Hash+salt support (your current file)
-  if (user.salt && user.passwordHash) {
-    const candidates = computeHashes(password, user.salt);
-    return candidates.includes(user.passwordHash);
+  if (Array.isArray(data.users)) {
+    return data.users;
   }
 
-  return false;
-}
+  return [];
+};
 
-// When we set a password (create/reset), we will store:
-function buildHashedPasswordRecord(password) {
-  const salt = makeSaltHex();
-  // Choose a single canonical scheme going forward:
-  const passwordHash = sha256Hex(password + salt);
-  return { salt, passwordHash, hashScheme: 'sha256(password+salt)' };
-}
+const saveUsersArray = (users) => {
+  writeJSON(USERS_FILE, users);
+};
 
-// ========= Helpers: MIME =========
-function getMimeType(filename) {
-  const ext = path.extname(filename).toLowerCase();
-  switch (ext) {
-    case '.pdf': return 'application/pdf';
-    case '.png': return 'image/png';
-    case '.jpg':
-    case '.jpeg': return 'image/jpeg';
-    case '.gif': return 'image/gif';
-    case '.txt': return 'text/plain; charset=utf-8';
-    case '.json': return 'application/json; charset=utf-8';
-    case '.doc': return 'application/msword';
-    case '.docx': return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-    case '.xls': return 'application/vnd.ms-excel';
-    case '.xlsx': return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-    case '.ppt': return 'application/vnd.ms-powerpoint';
-    case '.pptx': return 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
-    case '.zip': return 'application/zip';
-    default: return 'application/octet-stream';
+const getProjectsArray = () => {
+  const data = readJSON(PROJECTS_FILE);
+
+  if (Array.isArray(data)) {
+    return data;
   }
-}
 
-function shouldInline(filename) {
-  const ext = path.extname(filename).toLowerCase();
-  return ['.pdf', '.png', '.jpg', '.jpeg', '.gif', '.txt', '.json'].includes(ext);
-}
+  if (Array.isArray(data.projects)) {
+    return data.projects;
+  }
 
-// ========= Bootstrap data files =========
-ensureDir(DATA_DIR);
+  return [];
+};
 
-// projects.json bootstrap (non tocca users.json!)
-if (!fs.existsSync(PROJECTS_FILE)) {
-  saveJson(PROJECTS_FILE, {
-    projects: [
-      {
-        id: 'bookstack-mcp-consip',
-        name: 'Bookstack MCP - Consip',
-        description: 'Documentazione e demo del progetto',
-        enabled: true
-      }
-    ]
+const saveProjectsArray = (projects) => {
+  writeJSON(PROJECTS_FILE, { projects });
+};
+
+const generateId = (name) =>
+  name
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '-')
+    .replace(/[^a-z0-9-_]/g, '')
+    || Date.now().toString();
+
+const hashPassword = (password, salt = crypto.randomBytes(16).toString('hex')) => ({
+  salt,
+  passwordHash: crypto
+    .createHash('sha256')
+    .update(password + salt)
+    .digest('hex'),
+  hashScheme: 'sha256(password+salt)'
+});
+
+const safePathSegment = (value) =>
+  String(value || '').replace(/[^a-zA-Z0-9._ -]/g, '_');
+
+const getProjectDocsDir = (projectId) =>
+  path.join(DOCS_DIR, safePathSegment(projectId));
+
+const getDocumentUrl = (req, projectId, filename) =>
+  `${req.protocol}://${req.get('host')}/api/projects/${encodeURIComponent(projectId)}/documents/${encodeURIComponent(filename)}`;
+
+// ==========================
+// LOGIN
+// ==========================
+app.post('/api/login', (req, res) => {
+  const { username, password } = req.body;
+
+  const usersData = readJSON(USERS_FILE);
+  const users = Array.isArray(usersData) ? usersData : usersData.users || [];
+
+  const user = users.find((u) => u.username === username);
+
+  if (!user || !user.enabled) {
+    return res.status(401).json({ message: 'Utente non valido' });
+  }
+
+  const hash = crypto
+    .createHash('sha256')
+    .update(password + user.salt)
+    .digest('hex');
+
+  if (hash !== user.passwordHash) {
+    return res.status(401).json({ message: 'Password errata' });
+  }
+
+  res.json({
+    username: user.username,
+    role: user.role
   });
-}
+});
 
-// OPTIONAL: break-glass bootstrap admin password
-// If you are locked out, set env var once and restart backend:
-//   Windows PowerShell:  $env:GENAI_BOOTSTRAP_ADMIN_PASSWORD="NuovaPass"; node index.js
-// It will update (or create) admin in users.json with that password.
-function bootstrapAdminIfEnvSet() {
-  const pw = process.env.GENAI_BOOTSTRAP_ADMIN_PASSWORD;
-  if (!pw) return;
+app.get('/api/me', (req, res) => {
+  res.status(401).json({ message: 'Non autenticato' });
+});
 
-  const users = loadJson(USERS_FILE, []);
-  const idx = users.findIndex(u => u.username === 'admin');
+// ==========================
+// USERS
+// ==========================
+app.get('/api/users', (req, res) => {
+  const users = getUsersArray().map(({ passwordHash, salt, ...user }) => user);
+  res.json({ users });
+});
 
-  const rec = buildHashedPasswordRecord(pw);
-  const adminUser = {
-    username: 'admin',
-    role: 'admin',
+app.post('/api/users', (req, res) => {
+  const { username, password, role = 'user' } = req.body;
+
+  if (!username || !password) {
+    return res.status(400).json({
+      message: 'Username e password sono obbligatori'
+    });
+  }
+
+  if (!['admin', 'user'].includes(role)) {
+    return res.status(400).json({
+      message: 'Ruolo non valido'
+    });
+  }
+
+  const users = getUsersArray();
+  const normalizedUsername = username.trim();
+
+  const alreadyExists = users.some(
+    (user) => user.username.toLowerCase() === normalizedUsername.toLowerCase()
+  );
+
+  if (alreadyExists) {
+    return res.status(409).json({
+      message: 'Esiste gia un utente con questo username'
+    });
+  }
+
+  const passwordData = hashPassword(password);
+  const newUser = {
+    username: normalizedUsername,
+    role,
     enabled: true,
-    ...rec,
+    ...passwordData,
     createdAt: new Date().toISOString()
   };
 
-  if (idx >= 0) {
-    users[idx] = { ...users[idx], ...adminUser };
-  } else {
-    users.push(adminUser);
+  users.push(newUser);
+  saveUsersArray(users);
+
+  const { passwordHash, salt, ...safeUser } = newUser;
+  res.status(201).json(safeUser);
+});
+
+app.delete('/api/users/:username', (req, res) => {
+  const { username } = req.params;
+  const users = getUsersArray();
+  const updatedUsers = users.filter((user) => user.username !== username);
+
+  if (updatedUsers.length === users.length) {
+    return res.status(404).json({
+      message: 'Utente non trovato'
+    });
   }
 
-  saveJson(USERS_FILE, users);
-  console.log('✅ Bootstrap admin password applied from GENAI_BOOTSTRAP_ADMIN_PASSWORD');
-}
+  saveUsersArray(updatedUsers);
 
-bootstrapAdminIfEnvSet();
-
-// ========= Routes =========
-
-// Health
-app.get('/healthz', (req, res) => res.json({ status: 'ok' }));
-
-// Me
-app.get('/me', (req, res) => {
-  if (!req.session || !req.session.user) return res.status(401).json({ error: 'Unauthorized' });
-  res.json(req.session.user);
+  res.json({
+    message: 'Utente eliminato correttamente'
+  });
 });
 
-// Login
-app.post('/login', (req, res) => {
-  const { username, password } = req.body || {};
-  if (!username || !password) return res.status(400).json({ error: 'Missing username/password' });
+app.post('/api/users/:username/reset-password', (req, res) => {
+  const { username } = req.params;
+  const { password } = req.body;
 
-  const users = loadJson(USERS_FILE, []);
-  const user = users.find(u => u.username === username && u.enabled !== false);
+  if (!password) {
+    return res.status(400).json({
+      message: 'Password obbligatoria'
+    });
+  }
 
-  if (!user) return res.status(401).json({ error: 'Invalid credentials' });
-  if (!verifyPassword(user, password)) return res.status(401).json({ error: 'Invalid credentials' });
+  const users = getUsersArray();
+  const index = users.findIndex((user) => user.username === username);
 
-  req.session.user = { username: user.username, role: user.role };
-  res.json(req.session.user);
+  if (index === -1) {
+    return res.status(404).json({
+      message: 'Utente non trovato'
+    });
+  }
+
+  users[index] = {
+    ...users[index],
+    ...hashPassword(password)
+  };
+
+  saveUsersArray(users);
+
+  res.json({
+    message: 'Password aggiornata correttamente'
+  });
 });
 
-// Logout
-app.post('/logout', (req, res) => {
-  if (!req.session) return res.json({ ok: true });
-  req.session.destroy(() => res.json({ ok: true }));
-});
-
-// ========= Projects API (fix /api/projects) =========
-app.get('/api/projects', requireAuth, (req, res) => {
-  const cfg = loadJson(PROJECTS_FILE, { projects: [] });
-  const projects = (cfg.projects || []).filter(p => p.enabled !== false);
+// ==========================
+// PROJECTS
+// ==========================
+app.get('/api/projects', (req, res) => {
+  const projects = getProjectsArray();
   res.json({ projects });
 });
 
-app.get('/api/projects/:projectId', requireAuth, (req, res) => {
-  const projectId = String(req.params.projectId);
-  const cfg = loadJson(PROJECTS_FILE, { projects: [] });
-  const project = (cfg.projects || []).find(p => p.id === projectId && p.enabled !== false);
-  if (!project) return res.status(404).json({ error: 'Project not found' });
-  res.json(project);
+app.post('/api/projects', (req, res) => {
+  const { name, description } = req.body;
+
+  if (!name || !description) {
+    return res.status(400).json({
+      message: 'Nome e descrizione sono obbligatori'
+    });
+  }
+
+  const projects = getProjectsArray();
+
+  const id = generateId(name);
+
+  const alreadyExists = projects.some(
+    (project) => String(project.id) === String(id)
+  );
+
+  if (alreadyExists) {
+    return res.status(409).json({
+      message: 'Esiste già un progetto con questo nome'
+    });
+  }
+
+  const newProject = {
+    id,
+    name: name.trim(),
+    description: description.trim(),
+    enabled: true,
+    createdAt: new Date().toISOString()
+  };
+
+  projects.push(newProject);
+  saveProjectsArray(projects);
+
+  res.status(201).json(newProject);
 });
 
-// ========= Project Docs API (project-scoped) =========
-app.get('/api/projects/:projectId/docs', requireAuth, (req, res) => {
-  const projectId = String(req.params.projectId);
-  const projectDir = path.join(DOCS_ROOT, projectId);
+app.delete('/api/projects/:id', (req, res) => {
+  const { id } = req.params;
+
+  const projects = getProjectsArray();
+
+  const projectExists = projects.some(
+    (project) => String(project.id) === String(id)
+  );
+
+  if (!projectExists) {
+    return res.status(404).json({
+      message: 'Progetto non trovato'
+    });
+  }
+
+  const updatedProjects = projects.filter(
+    (project) => String(project.id) !== String(id)
+  );
+
+  saveProjectsArray(updatedProjects);
+
+  res.json({
+    message: 'Progetto eliminato correttamente'
+  });
+});
+
+app.get('/api/projects/:id/documents', (req, res) => {
+  const { id } = req.params;
+  const projectDir = getProjectDocsDir(id);
 
   if (!fs.existsSync(projectDir)) {
-    return res.json({ projectId, documents: [] });
+    return res.json({ documents: [] });
   }
 
-  const files = fs.readdirSync(projectDir, { withFileTypes: true })
-    .filter(e => e.isFile())
-    .map(e => e.name)
-    .filter(n => !n.startsWith('.'));
+  const documents = fs.readdirSync(projectDir, { withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => ({
+      name: entry.name,
+      url: getDocumentUrl(req, id, entry.name)
+    }));
 
-  const documents = files.map(name => ({
-    name,
-    ext: path.extname(name).replace('.', '').toLowerCase(),
-    url: `/api/projects/${encodeURIComponent(projectId)}/docs/${encodeURIComponent(name)}`
+  res.json({ documents });
+});
+
+app.post('/api/projects/:id/documents', upload.array('files'), (req, res) => {
+  const documents = (req.files || []).map((file) => ({
+    name: file.filename,
+    url: getDocumentUrl(req, req.params.id, file.filename)
   }));
 
-  res.json({ projectId, documents });
+  res.status(201).json({ documents });
 });
 
-app.get('/api/projects/:projectId/docs/:file', requireAuth, (req, res) => {
-  const projectId = String(req.params.projectId);
-  const safeFile = path.basename(String(req.params.file || ''));
-  const filePath = path.join(DOCS_ROOT, projectId, safeFile);
+app.get('/api/projects/:id/documents/:filename', (req, res) => {
+  const filePath = path.join(
+    getProjectDocsDir(req.params.id),
+    safePathSegment(req.params.filename)
+  );
 
-  if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File not found' });
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({
+      message: 'Documento non trovato'
+    });
+  }
 
-  res.setHeader('Content-Type', getMimeType(safeFile));
-  res.setHeader('Content-Disposition', `${shouldInline(safeFile) ? 'inline' : 'attachment'}; filename="${safeFile}"`);
-  fs.createReadStream(filePath).pipe(res);
+  res.sendFile(filePath);
 });
 
-// Placeholder demos API
-app.get('/api/projects/:projectId/demos', requireAuth, (req, res) => {
-  const projectId = String(req.params.projectId);
-  res.json({ projectId, demos: [] });
-});
-
-// ========= Users API (admin) =========
-app.get('/users', requireAdmin, (req, res) => {
-  const users = loadJson(USERS_FILE, []);
-  // never return hashes
-  res.json(users.map(u => ({
-    username: u.username,
-    role: u.role,
-    enabled: u.enabled !== false,
-    createdAt: u.createdAt || null
-  })));
-});
-
-app.post('/users', requireAdmin, (req, res) => {
-  const { username, password, role } = req.body || {};
-  if (!username || !password || !role) return res.status(400).json({ error: 'Missing username/password/role' });
-  if (!['admin', 'user'].includes(role)) return res.status(400).json({ error: 'Invalid role' });
-
-  const users = loadJson(USERS_FILE, []);
-  if (users.find(u => u.username === username)) return res.status(409).json({ error: 'User already exists' });
-
-  const rec = buildHashedPasswordRecord(password);
-
-  users.push({
-    username,
-    role,
-    enabled: true,
-    ...rec,
-    createdAt: new Date().toISOString()
+app.get('/api/health', (req, res) => {
+  res.json({
+    status: 'UP',
+    timestamp: new Date().toISOString()
   });
-
-  saveJson(USERS_FILE, users);
-  res.json({ ok: true });
 });
 
-app.put('/users/:username', requireAdmin, (req, res) => {
-  const username = String(req.params.username);
-  const { role, enabled } = req.body || {};
-
-  const users = loadJson(USERS_FILE, []);
-  const user = users.find(u => u.username === username);
-  if (!user) return res.status(404).json({ error: 'User not found' });
-
-  if (role !== undefined) {
-    if (!['admin', 'user'].includes(role)) return res.status(400).json({ error: 'Invalid role' });
-    user.role = role;
-  }
-  if (enabled !== undefined) user.enabled = !!enabled;
-
-  saveJson(USERS_FILE, users);
-  res.json({ ok: true });
-});
-
-app.post('/users/:username/reset-password', requireAdmin, (req, res) => {
-  const username = String(req.params.username);
-  const { password } = req.body || {};
-  if (!password) return res.status(400).json({ error: 'Missing password' });
-
-  const users = loadJson(USERS_FILE, []);
-  const user = users.find(u => u.username === username);
-  if (!user) return res.status(404).json({ error: 'User not found' });
-
-  const rec = buildHashedPasswordRecord(password);
-  user.salt = rec.salt;
-  user.passwordHash = rec.passwordHash;
-  user.hashScheme = rec.hashScheme;
-  delete user.password; // remove any legacy plaintext
-
-  saveJson(USERS_FILE, users);
-  res.json({ ok: true });
-});
-
-app.delete('/users/:username', requireAdmin, (req, res) => {
-  const target = String(req.params.username);
-  const current = req.session.user?.username;
-
-  if (target === current) {
-    return res.status(400).json({ error: 'Cannot delete current logged user' });
-  }
-
-  const users = loadJson(USERS_FILE, []);
-  const next = users.filter(u => u.username !== target);
-
-  if (next.length === users.length) return res.status(404).json({ error: 'User not found' });
-
-  saveJson(USERS_FILE, next);
-  res.json({ ok: true });
-});
-
-// ========= 404 =========
-app.use((req, res) => {
-  res.status(404).json({ error: 'Not Found', path: req.path });
-});
-
-// ========= Start =========
 app.listen(PORT, () => {
-  console.log(`✅ Backend running on http://localhost:${PORT}`);
-  console.log(`   - /api/projects ready`);
-  console.log(`   - users.json path: ${USERS_FILE}`);
-  console.log(`   - projects.json path: ${PROJECTS_FILE}`);
+  console.log(`🚀 Backend attivo su http://localhost:${PORT}`);
 });

@@ -1,6 +1,10 @@
 # Node dependencies
 node_modules/
 
+# Runtime uploads and local data
+backend/data/docs/
+backend/uploads/
+
 # Logs
 *.log
 
