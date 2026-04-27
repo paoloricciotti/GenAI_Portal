@@ -30,10 +30,19 @@ function App() {
   const [docsError, setDocsError] = useState('');
   const [docsSearch, setDocsSearch] = useState('');
 
-  // ===== Admin Users (placeholder UI) =====
+  // ===== Admin Users (FULL CRUD UI) =====
   const [users, setUsers] = useState([]);
   const [usersLoading, setUsersLoading] = useState(false);
   const [usersError, setUsersError] = useState('');
+
+  const [newU, setNewU] = useState('');
+  const [newP, setNewP] = useState('');
+  const [newR, setNewR] = useState('user');
+  const [createMsg, setCreateMsg] = useState('');
+
+  const [resetTarget, setResetTarget] = useState('');
+  const [resetPass, setResetPass] = useState('');
+  const [resetMsg, setResetMsg] = useState('');
 
   // ===== Helpers =====
   const getFileIcon = (name) => {
@@ -83,7 +92,7 @@ function App() {
       }
       const data = await res.json();
       const list = data.projects || [];
-      setProjects(list.filter(p => p.enabled !== false));
+      setProjects(list.filter((p) => p.enabled !== false));
     } catch {
       setProjectsError('Errore di connessione (progetti)');
       setProjects([]);
@@ -109,9 +118,10 @@ function App() {
     setDocsLoading(true);
 
     try {
-      const res = await fetch(`${API}/api/projects/${encodeURIComponent(activeProjectId)}/docs`, {
-        credentials: 'include'
-      });
+      const res = await fetch(
+        `${API}/api/projects/${encodeURIComponent(activeProjectId)}/docs`,
+        { credentials: 'include' }
+      );
       if (!res.ok) {
         setDocsError('Impossibile caricare documenti del progetto');
         setDocs([]);
@@ -130,9 +140,10 @@ function App() {
   const filteredDocs = useMemo(() => {
     const q = docsSearch.trim().toLowerCase();
     if (!q) return docs;
-    return docs.filter(d => d.name.toLowerCase().includes(q));
+    return docs.filter((d) => d.name.toLowerCase().includes(q));
   }, [docs, docsSearch]);
 
+  // ===== Users (admin) =====
   const loadUsers = async () => {
     setUsersLoading(true);
     setUsersError('');
@@ -149,6 +160,102 @@ function App() {
       setUsers([]);
     } finally {
       setUsersLoading(false);
+    }
+  };
+
+  const createUser = async () => {
+    setCreateMsg('');
+    if (!newU.trim() || !newP || !newR) {
+      setCreateMsg('Compila username, password e ruolo.');
+      return;
+    }
+
+    try {
+      const res = await fetch(`${API}/users`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          username: newU.trim(),
+          password: newP,
+          role: newR
+        })
+      });
+
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        setCreateMsg(j.error || 'Errore creazione utente');
+        return;
+      }
+
+      setCreateMsg('✅ Utente creato');
+      setNewU('');
+      setNewP('');
+      setNewR('user');
+      await loadUsers();
+    } catch {
+      setCreateMsg('Errore di connessione');
+    }
+  };
+
+  const updateUser = async (username, patch) => {
+    try {
+      const res = await fetch(`${API}/users/${encodeURIComponent(username)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(patch)
+      });
+      if (res.ok) await loadUsers();
+    } catch {
+      // ignore
+    }
+  };
+
+  const resetPassword = async () => {
+    setResetMsg('');
+    if (!resetTarget || !resetPass) {
+      setResetMsg('Seleziona utente e inserisci nuova password.');
+      return;
+    }
+
+    try {
+      const res = await fetch(`${API}/users/${encodeURIComponent(resetTarget)}/reset-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ password: resetPass })
+      });
+
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        setResetMsg(j.error || 'Errore reset password');
+        return;
+      }
+
+      setResetMsg('✅ Password aggiornata');
+      setResetPass('');
+    } catch {
+      setResetMsg('Errore di connessione');
+    }
+  };
+
+  const deleteUser = async (username) => {
+    if (username === me.username) {
+      alert('Non puoi eliminare l’utente con cui sei loggato.');
+      return;
+    }
+    const ok = window.confirm(`Eliminare l'utente "${username}"?`);
+    if (!ok) return;
+
+    try {
+      const res = await fetch(`${API}/users/${encodeURIComponent(username)}`, {
+        method: 'DELETE',
+        credentials: 'include'
+      });
+      if (res.ok) await loadUsers();
+    } catch {
+      // ignore
     }
   };
 
@@ -260,7 +367,7 @@ function App() {
           {isAdmin && (
             <button
               style={styles.secondaryButton}
-              onClick={async () => { setView('adminUsers'); await loadUsers(); }}
+              onClick={async () => { setView('adminUsers'); setCreateMsg(''); setResetMsg(''); await loadUsers(); }}
             >
               User Management
             </button>
@@ -281,7 +388,7 @@ function App() {
 
             {!projectsLoading && (
               <div style={styles.grid}>
-                {projects.map(p => (
+                {projects.map((p) => (
                   <Tile
                     key={p.id}
                     title={p.name}
@@ -311,7 +418,7 @@ function App() {
           </>
         )}
 
-        {/* ADMIN USERS */}
+        {/* ADMIN USERS (FULL) */}
         {view === 'adminUsers' && (
           <>
             <div style={styles.breadcrumbRow}>
@@ -319,23 +426,105 @@ function App() {
               <h1 style={styles.pageTitle}>User Management</h1>
             </div>
 
-            {usersLoading && <p style={styles.muted}>Caricamento…</p>}
-            {usersError && <p style={styles.errorText}>{usersError}</p>}
+            <div style={styles.adminGrid}>
+              {/* Create user */}
+              <div style={styles.adminCard}>
+                <h3 style={{ marginTop: 0 }}>Crea nuovo utente</h3>
 
-            {!usersLoading && !usersError && (
-              <div style={styles.adminTableCard}>
-                {users.length === 0 ? (
-                  <p style={styles.muted}>Nessun utente.</p>
-                ) : (
-                  users.map(u => (
-                    <div key={u.username} style={styles.userRow}>
-                      <div style={{ fontWeight: 700 }}>{u.username}</div>
-                      <div style={styles.mutedSmall}>{u.role}</div>
-                    </div>
-                  ))
-                )}
+                <div style={styles.formRow}>
+                  <label style={styles.label}>Username</label>
+                  <input style={styles.input} value={newU} onChange={(e) => setNewU(e.target.value)} />
+                </div>
+
+                <div style={styles.formRow}>
+                  <label style={styles.label}>Password</label>
+                  <input style={styles.input} type="password" value={newP} onChange={(e) => setNewP(e.target.value)} />
+                </div>
+
+                <div style={styles.formRow}>
+                  <label style={styles.label}>Ruolo</label>
+                  <select style={styles.input} value={newR} onChange={(e) => setNewR(e.target.value)}>
+                    <option value="user">user</option>
+                    <option value="admin">admin</option>
+                  </select>
+                </div>
+
+                <button style={styles.primaryButton} onClick={createUser}>Crea utente</button>
+                {createMsg && <p style={styles.muted}>{createMsg}</p>}
               </div>
-            )}
+
+              {/* Reset password */}
+              <div style={styles.adminCard}>
+                <h3 style={{ marginTop: 0 }}>Reset password</h3>
+
+                <div style={styles.formRow}>
+                  <label style={styles.label}>Utente</label>
+                  <select style={styles.input} value={resetTarget} onChange={(e) => setResetTarget(e.target.value)}>
+                    <option value="">-- seleziona --</option>
+                    {users.map((u) => (
+                      <option key={u.username} value={u.username}>{u.username}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div style={styles.formRow}>
+                  <label style={styles.label}>Nuova password</label>
+                  <input style={styles.input} type="password" value={resetPass} onChange={(e) => setResetPass(e.target.value)} />
+                </div>
+
+                <button style={styles.secondaryButton} onClick={resetPassword}>Aggiorna password</button>
+                {resetMsg && <p style={styles.muted}>{resetMsg}</p>}
+              </div>
+            </div>
+
+            {/* Users list */}
+            <div style={styles.adminTableCard}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <h3 style={{ margin: 0 }}>Utenti</h3>
+                <button style={styles.secondaryButton} onClick={loadUsers}>Ricarica</button>
+              </div>
+
+              {usersLoading && <p style={styles.muted}>Caricamento…</p>}
+              {usersError && <p style={styles.errorText}>{usersError}</p>}
+
+              {!usersLoading && !usersError && (
+                <div style={{ marginTop: 12 }}>
+                  {users.length === 0 ? (
+                    <p style={styles.muted}>Nessun utente.</p>
+                  ) : (
+                    users.map((u) => (
+                      <div key={u.username} style={styles.userRow}>
+                        <div style={{ minWidth: 160 }}>
+                          <div style={{ fontWeight: 700 }}>{u.username}</div>
+                          <div style={styles.mutedSmall}>{u.createdAt ? `created: ${u.createdAt}` : ''}</div>
+                        </div>
+
+                        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+                          <label style={styles.mutedSmall}>role</label>
+                          <select
+                            style={styles.smallSelect}
+                            value={u.role}
+                            onChange={(e) => updateUser(u.username, { role: e.target.value })}
+                          >
+                            <option value="user">user</option>
+                            <option value="admin">admin</option>
+                          </select>
+
+                          <label style={styles.mutedSmall}>enabled</label>
+                          <input
+                            type="checkbox"
+                            checked={!!u.enabled}
+                            onChange={(e) => updateUser(u.username, { enabled: e.target.checked })}
+                          />
+
+                          <button style={styles.dangerButton} onClick={() => deleteUser(u.username)}>Elimina</button>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
           </>
         )}
       </div>
@@ -364,7 +553,7 @@ function App() {
                 {filteredDocs.length === 0 ? (
                   <p style={styles.muted}>Nessun documento trovato.</p>
                 ) : (
-                  filteredDocs.map(d => (
+                  filteredDocs.map((d) => (
                     <a
                       key={d.name}
                       className="doc-item"
@@ -445,6 +634,8 @@ const styles = {
     cursor: 'pointer'
   },
   errorText: { color: '#ff6b6b', margin: '8px 0 10px' },
+  muted: { color: '#b3b3c7' },
+  mutedSmall: { color: '#b3b3c7', fontSize: 12 },
 
   // PAGE
   page: { minHeight: '100vh', background: '#0f0f17', color: '#fff' },
@@ -481,10 +672,18 @@ const styles = {
     cursor: 'pointer',
     fontWeight: 700
   },
+  dangerButton: {
+    padding: '8px 12px',
+    background: 'transparent',
+    border: '1px solid #ff6b6b',
+    color: '#ff6b6b',
+    borderRadius: 8,
+    cursor: 'pointer',
+    fontWeight: 700
+  },
 
   content: { padding: '96px 40px 40px' },
   pageTitle: { margin: '0 0 24px 0' },
-  muted: { color: '#b3b3c7' },
 
   breadcrumbRow: { display: 'flex', alignItems: 'center', gap: 16, marginBottom: 16 },
   backButton: {
@@ -503,10 +702,31 @@ const styles = {
     borderRadius: 10,
     boxShadow: '0 0 0 1px #2a2a3d',
     transition: 'all 0.2s ease',
-    cursor: 'pointer'
+    cursor: 'pointer',
+    minHeight: 200,
+    display: 'flex',
+    flexDirection: 'column',
+    justifyContent: 'space-between'
   },
   tileTitle: { margin: '0 0 10px 0' },
   tileType: { margin: '0 0 18px 0', color: '#b3b3c7', fontSize: 14 },
+
+  // Admin
+  adminGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))',
+    gap: 24,
+    marginBottom: 24
+  },
+  adminCard: {
+    background: '#1b1b2b',
+    border: '1px solid #2a2a3d',
+    borderRadius: 12,
+    padding: 18
+  },
+  adminTableCard: { marginTop: 16, padding: 18, border: '1px solid #2a2a3d', borderRadius: 12, background: '#1b1b2b' },
+  userRow: { display: 'flex', justifyContent: 'space-between', gap: 16, padding: '12px 0', borderBottom: '1px solid #2a2a3d' },
+  smallSelect: { padding: '6px 10px', borderRadius: 8, border: '1px solid #2a2a3d', background: '#121224', color: '#fff' },
 
   // Modal docs
   modalOverlay: {
@@ -545,12 +765,7 @@ const styles = {
   },
   docIcon: { fontSize: 18 },
   docName: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
-  docMeta: { color: '#b3b3c7', fontSize: 12 },
-
-  // Admin view placeholder
-  adminTableCard: { marginTop: 16, padding: 18, border: '1px solid #2a2a3d', borderRadius: 12, background: '#1b1b2b' },
-  userRow: { display: 'flex', justifyContent: 'space-between', padding: '10px 0', borderBottom: '1px solid #2a2a3d' },
-  mutedSmall: { color: '#b3b3c7', fontSize: 12 }
+  docMeta: { color: '#b3b3c7', fontSize: 12 }
 };
 
 export default App;
