@@ -1,4 +1,6 @@
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
+//const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001/api';
+
+const API_URL = 'https://genai-portal.onrender.com/api';
 
 const request = async (path, options = {}) => {
   const config = {
